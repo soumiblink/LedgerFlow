@@ -37,17 +37,9 @@ def _build_payout_response(payout: Payout) -> dict:
 
 
 def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempotency_key: str) -> dict:
-    """
-    Safely create a payout with:
-    - idempotency (same key → same response)
-    - select_for_update row lock (prevents concurrent overspend)
-    - atomic transaction (balance check + payout + ledger debit together)
+   
 
-    Returns a dict with payout_id, status, amount_paise.
-    Raises InsufficientBalanceError or MerchantNotFoundError on failure.
-    """
-
-    # ── Step 1: Fast idempotency check (outside transaction, no lock needed) ──
+    #  Step 1: Fast idempotency check 
     existing = Payout.objects.filter(
         merchant_id=merchant_id,
         idempotency_key=idempotency_key,
@@ -57,12 +49,10 @@ def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempote
         logger.info("Idempotent hit for key=%s merchant=%s", idempotency_key, merchant_id)
         return _build_payout_response(existing)
 
-    # ── Step 2: Atomic block — lock → validate → create ──
+    #  Step 2: Atomic block — lock → validate → create 
     try:
         with transaction.atomic():
-            # Lock the merchant row to serialize concurrent payout requests
-            # for the same merchant. No other transaction can modify this row
-            # until we commit.
+    
             try:
                 merchant = Merchant.objects.select_for_update().get(id=merchant_id)
             except Merchant.DoesNotExist:
@@ -105,9 +95,7 @@ def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempote
             return _build_payout_response(payout)
 
     except IntegrityError:
-        # Race condition: two requests with the same idempotency key hit the DB
-        # simultaneously. The unique constraint on (merchant, idempotency_key)
-        # blocked the second insert — fetch and return the winner.
+        
         logger.warning(
             "IntegrityError on idempotency_key=%s — concurrent duplicate, fetching existing.",
             idempotency_key,
@@ -120,12 +108,7 @@ def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempote
 
 
 def _trigger_processing(payout_id: str) -> None:
-    """
-    Fire the Celery task after the DB transaction has committed.
-    Using on_commit() ensures the worker never reads a payout that
-    doesn't exist yet in the DB.
-    Fails silently if broker is unavailable (dev without Redis).
-    """
+   
     from apps.payouts.tasks import process_payout  # local import avoids circular at module load
     try:
         process_payout.delay(payout_id)

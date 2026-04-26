@@ -1,7 +1,3 @@
-"""
-Ledger service layer.
-All balance computations live here — single DB query each, no Python loops.
-"""
 
 from django.db.models import Q, Sum
 from django.db.models.functions import Cast
@@ -32,15 +28,9 @@ def get_merchant_balance(merchant_id) -> int:
 
 
 def get_merchant_held_balance(merchant_id) -> int:
-    """
-    Held balance in paise = funds reserved for PENDING or PROCESSING payouts.
-    These are DEBIT ledger entries whose linked payout has not yet completed.
-    UUID payout IDs are cast to VARCHAR to match reference_id's column type.
-    Single aggregation query.
-    """
+   
     non_terminal_statuses = [Payout.Status.PENDING, Payout.Status.PROCESSING]
 
-    # Cast UUID payout IDs → VARCHAR to match reference_id (CharField)
     pending_payout_ids = (
         Payout.objects.filter(
             merchant_id=merchant_id,
@@ -63,8 +53,5 @@ def get_merchant_held_balance(merchant_id) -> int:
 
 
 def get_available_balance(merchant_id) -> int:
-    """
-    Available balance = total balance - held balance.
-    Funds the merchant can actually request a payout for.
-    """
+    
     return get_merchant_balance(merchant_id) - get_merchant_held_balance(merchant_id)

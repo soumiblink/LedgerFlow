@@ -2,12 +2,10 @@
 Payout processing service.
 
 Handles the full lifecycle of a payout after creation:
-- state transitions (strict machine)
+- state transitions (strict, via Payout.transition_to())
 - simulated bank outcome
 - atomic ledger refund on failure
 - retry/timeout logic
-
-Kept separate from services.py (creation) for clarity.
 """
 
 import logging
@@ -20,35 +18,26 @@ from apps.payouts.models import Payout
 
 logger = logging.getLogger(__name__)
 
-# Simulated bank outcomes
 OUTCOME_SUCCESS = "success"
 OUTCOME_FAILURE = "failure"
-OUTCOME_PENDING = "pending"   # bank delayed, stay in PROCESSING
+OUTCOME_PENDING = "pending"   # bank delayed — stay in PROCESSING
 
 MAX_ATTEMPTS = 3
 STUCK_THRESHOLD_SECONDS = 30
 
 
 def _simulate_bank_outcome() -> str:
-    """
-    Simulate external bank API response.
-    70% success / 20% failure / 10% delayed (stay processing)
-    """
+    """70% success / 20% failure / 10% delayed."""
     roll = random.random()
     if roll < 0.70:
         return OUTCOME_SUCCESS
     elif roll < 0.90:
         return OUTCOME_FAILURE
-    else:
-        return OUTCOME_PENDING
+    return OUTCOME_PENDING
 
 
 def _issue_refund(payout: Payout) -> None:
-    """
-    Create a CREDIT ledger entry to return held funds.
-    Must be called inside an active transaction.atomic() block.
-    """
-    # Guard: never double-refund
+    
     already_refunded = LedgerEntry.objects.filter(
         reference_type="PAYOUT_REFUND",
         reference_id=str(payout.id),
@@ -69,66 +58,58 @@ def _issue_refund(payout: Payout) -> None:
 
 
 def process_payout_logic(payout_id: str) -> str:
-    """
-    Core processing logic for a single payout.
-    Called by the Celery task.
-
-    Returns the final status string.
-    """
+   
     with transaction.atomic():
-        # Lock the payout row — prevents concurrent workers racing on same payout
+        # Row lock — prevents two workers processing the same payout concurrently
         try:
             payout = Payout.objects.select_for_update().get(id=payout_id)
         except Payout.DoesNotExist:
             logger.error("Payout %s not found.", payout_id)
             return "NOT_FOUND"
 
-        # Idempotent: already in a terminal state, nothing to do
+
+        # Idempotent: terminal state — nothing to do
         if payout.status in (Payout.Status.COMPLETED, Payout.Status.FAILED):
-            logger.info("Payout %s already terminal (%s) — skipping.", payout_id, payout.status)
+            logger.info(
+                "Payout %s already terminal (%s) — skipping.", payout_id, payout.status
+            )
             return payout.status
 
-        # Move PENDING → PROCESSING (validate transition)
+
+        # PENDING → PROCESSING (validated by transition_to)
         if payout.status == Payout.Status.PENDING:
-            payout.status = Payout.Status.PROCESSING
+            payout.transition_to(Payout.Status.PROCESSING)
             payout.attempts += 1
-            payout.save(update_fields=["status", "attempts", "updated_at"])
+            payout.save(update_fields=["attempts", "updated_at"])
             logger.info("Payout %s → PROCESSING (attempt %s)", payout_id, payout.attempts)
 
-        # Simulate bank call
+
+        # Simulate bank API call
         outcome = _simulate_bank_outcome()
         logger.info("Payout %s bank outcome: %s", payout_id, outcome)
 
         if outcome == OUTCOME_SUCCESS:
-            # PROCESSING → COMPLETED
-            # Ledger already has the DEBIT hold — no new entry needed
-            payout.status = Payout.Status.COMPLETED
-            payout.save(update_fields=["status", "updated_at"])
+       
+            payout.transition_to(Payout.Status.COMPLETED)
             logger.info("Payout %s COMPLETED.", payout_id)
             return Payout.Status.COMPLETED
 
         elif outcome == OUTCOME_FAILURE:
-            # PROCESSING → FAILED + atomic refund
-            payout.status = Payout.Status.FAILED
-            payout.save(update_fields=["status", "updated_at"])
+            # transition_to validates PROCESSING → FAILED before writing
+            payout.transition_to(Payout.Status.FAILED)
+            
             _issue_refund(payout)
             logger.info("Payout %s FAILED — funds refunded.", payout_id)
             return Payout.Status.FAILED
 
         else:
-            # Bank delayed — stay in PROCESSING, task will be retried
+            # Bank delayed — stay in PROCESSING, beat task will retry
             logger.info("Payout %s still PROCESSING — bank delayed.", payout_id)
             return Payout.Status.PROCESSING
 
 
 def handle_stuck_payouts() -> None:
-    """
-    Called by the periodic Celery beat task.
-    Finds PROCESSING payouts stuck longer than STUCK_THRESHOLD_SECONDS.
-
-    - attempts <= MAX_ATTEMPTS → re-queue for processing
-    - attempts > MAX_ATTEMPTS  → force FAILED + refund
-    """
+    
     from apps.payouts.tasks import process_payout  # local import avoids circular
 
     cutoff = timezone.now() - timezone.timedelta(seconds=STUCK_THRESHOLD_SECONDS)
@@ -153,6 +134,6 @@ def handle_stuck_payouts() -> None:
                     "Payout %s exceeded max attempts — forcing FAILED + refund.",
                     payout.id,
                 )
-                payout.status = Payout.Status.FAILED
-                payout.save(update_fields=["status", "updated_at"])
+                # transition_to validates PROCESSING → FAILED
+                payout.transition_to(Payout.Status.FAILED)
                 _issue_refund(payout)

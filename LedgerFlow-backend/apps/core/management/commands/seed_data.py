@@ -1,9 +1,3 @@
-"""
-Management command: python manage.py seed_data
-Creates realistic merchant ledger data and prints computed balances.
-Safe to re-run — skips merchants that already exist by name.
-"""
-
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -77,6 +71,7 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING("  → Skipping entries (already seeded)\n"))
                 continue
 
+
             # CREDIT entries — incoming payments
             for credit in data["credits"]:
                 LedgerEntry.objects.create(
@@ -86,6 +81,7 @@ class Command(BaseCommand):
                     reference_type="PAYMENT",
                     reference_id=credit["ref"],
                 )
+
 
             # Completed DEBIT entries — past settled payouts
             for debit in data["debits"]:
@@ -102,6 +98,7 @@ class Command(BaseCommand):
                     reference_type="PAYOUT",
                     reference_id=str(payout.id),
                 )
+
 
             # Pending/processing payouts — funds are held
             for pending in data["pending_payouts"]:
@@ -120,20 +117,21 @@ class Command(BaseCommand):
                 )
 
             self.stdout.write(self.style.SUCCESS("  → Entries created"))
+            
 
         # Print balance summary for all seeded merchants
         self.stdout.write(self.style.MIGRATE_HEADING("\n=== Balance Summary ===\n"))
         self.stdout.write(f"{'Merchant':<25} {'Total':>15} {'Held':>15} {'Available':>15}")
         self.stdout.write("-" * 72)
 
+        def fmt(paise: int) -> str:
+            return f"Rs.{paise / 100:,.2f}"
+
         for data in SEED_MERCHANTS:
             merchant = Merchant.objects.get(name=data["name"])
             total     = get_merchant_balance(merchant.id)
             held      = get_merchant_held_balance(merchant.id)
             available = get_available_balance(merchant.id)
-
-            def fmt(paise):
-                return f"₹{paise / 100:,.2f}"
 
             self.stdout.write(
                 f"{merchant.name:<25} {fmt(total):>15} {fmt(held):>15} {fmt(available):>15}"

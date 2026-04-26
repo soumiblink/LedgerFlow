@@ -44,6 +44,8 @@ with transaction.atomic():
 
 Every payout request requires an `Idempotency-Key` header. The key is stored alongside the payout with a `UniqueConstraint` on `(merchant, idempotency_key)`.
 
+**TTL:** The `IdempotencyKey` model has an `expires_at` field supporting 24-hour TTL. A `purge_expired_idempotency_keys` Celery task exists to clean up expired records. It is not yet wired into the beat schedule — the schema supports it and the task is ready to enable.
+
 **Sequential duplicates:** Before entering the transaction, we check for an existing payout with the same key. If found, we return the original response immediately — no DB write, no lock acquired.
 
 **Concurrent duplicates (race condition):** Two requests with the same key arrive simultaneously. Both pass the pre-check (neither exists yet). Both enter the transaction. One inserts successfully. The other hits the unique constraint and raises `IntegrityError`. We catch it and return the existing payout:
@@ -103,13 +105,12 @@ Payouts are processed by a Celery task (`process_payout`) triggered via `on_comm
 
 **Retry:** The Celery beat task `retry_stuck_payouts` runs every 30 seconds. It finds payouts in `PROCESSING` with `updated_at` older than 30 seconds and re-queues them. After `MAX_ATTEMPTS = 3`, the payout is forced to `FAILED`.
 
-**Refund:** On failure, the status update and the refund CREDIT entry are written in the same `transaction.atomic()` block:
+**Refund:** On failure, the status update and the refund CREDIT entry are written in the same `transaction.atomic()` block. The status transition goes through `transition_to()` which validates `PROCESSING → FAILED` before writing:
 
 ```python
 with transaction.atomic():
-    payout.status = Payout.Status.FAILED
-    payout.save(update_fields=["status", "updated_at"])
-    _issue_refund(payout)
+    payout.transition_to(Payout.Status.FAILED)  # validates before writing
+    _issue_refund(payout)                        # existence-checked inside same tx
 ```
 
 If the transaction rolls back, neither the status change nor the refund entry is written. They are always consistent.

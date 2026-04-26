@@ -4,11 +4,7 @@ from apps.core.models import TimeStampedModel
 
 
 class Payout(TimeStampedModel):
-    """
-    Represents a merchant withdrawal request.
-    Follows a strict state machine: PENDING → PROCESSING → COMPLETED | FAILED
-    No backward transitions are allowed.
-    """
+   
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"

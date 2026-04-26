@@ -124,14 +124,14 @@ class IdempotencyTest(TransactionTestCase):
         t1.start(); t2.start()
         t1.join(); t2.join()
 
-        # At least one must have succeeded (PostgreSQL), or both may be None (SQLite lock)
+        # At least one must have succeeded
         successful = [r for r in responses if r is not None and r.status_code == 201]
+        self.assertGreaterEqual(len(successful), 1, "No successful response at all")
 
         # Only one payout in DB regardless of how many requests got through
         count = Payout.objects.filter(merchant=self.merchant, idempotency_key=key).count()
-        self.assertLessEqual(count, 1, "Duplicate payout created despite same idempotency key")
+        self.assertEqual(count, 1, "Duplicate payout created despite same idempotency key")
 
-        # If any succeeded, they must all reference the same payout
-        if successful:
-            payout_ids = {r.data["payout_id"] for r in successful}
-            self.assertEqual(len(payout_ids), 1, "Successful responses reference different payouts")
+        # All successful responses must reference the same payout
+        payout_ids = {r.data["payout_id"] for r in successful}
+        self.assertEqual(len(payout_ids), 1, "Successful responses reference different payouts")

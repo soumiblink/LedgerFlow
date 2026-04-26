@@ -26,7 +26,7 @@ class StateMachineTest(TestCase):
         self.merchant = create_merchant("State Machine Merchant")
         seed_balance(self.merchant, 50_000)
 
-    # ── Valid transitions ─────────────────────────────────────────────────────
+    #  Valid transitions 
 
     def test_pending_to_processing(self):
         p = _make_payout(self.merchant, Payout.Status.PENDING)
@@ -46,7 +46,7 @@ class StateMachineTest(TestCase):
         p.refresh_from_db()
         self.assertEqual(p.status, Payout.Status.FAILED)
 
-    # ── Invalid transitions ───────────────────────────────────────────────────
+    # Invalid transitions 
 
     def test_completed_to_pending_rejected(self):
         p = _make_payout(self.merchant, Payout.Status.COMPLETED)
@@ -84,13 +84,13 @@ class StateMachineTest(TestCase):
             p.transition_to(Payout.Status.PENDING)
 
     def test_pending_to_completed_rejected(self):
-        """Must go through PROCESSING first."""
+        
         p = _make_payout(self.merchant, Payout.Status.PENDING)
         with self.assertRaises(ValueError):
             p.transition_to(Payout.Status.COMPLETED)
 
     def test_invalid_transition_does_not_persist(self):
-        """A rejected transition must not change the status in the DB."""
+        
         p = _make_payout(self.merchant, Payout.Status.COMPLETED)
         try:
             p.transition_to(Payout.Status.PENDING)

@@ -2,7 +2,7 @@ from .base import *  # noqa
 
 DEBUG = True
 
-# Allow browsable API in development
+
 REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"] += [  # noqa
     "rest_framework.renderers.BrowsableAPIRenderer",
 ]

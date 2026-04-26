@@ -18,7 +18,7 @@ from tests.helpers import create_merchant, seed_balance
 
 
 def _create_payout_with_debit(merchant, amount_paise=10_000) -> Payout:
-    """Create a payout + matching DEBIT hold entry, as the real flow does."""
+    
     payout = Payout.objects.create(
         merchant=merchant,
         amount_paise=amount_paise,
@@ -42,7 +42,7 @@ class RefundCorrectnessTest(TestCase):
         seed_balance(self.merchant, 50_000)
 
     def test_failed_payout_creates_refund_entry(self):
-        """Forcing FAILED via process_payout_logic must create a PAYOUT_REFUND credit."""
+        
         payout = _create_payout_with_debit(self.merchant, 10_000)
 
         with patch("apps.payouts.processing._simulate_bank_outcome", return_value="failure"):
