@@ -10,6 +10,7 @@ All payout creation logic lives here:
 
 import logging
 from django.db import transaction, IntegrityError
+from django.db.transaction import on_commit
 
 from apps.merchants.models import Merchant
 from apps.ledger.models import LedgerEntry
@@ -96,6 +97,11 @@ def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempote
                 "Payout created: id=%s merchant=%s amount=%sp",
                 payout.id, merchant_id, amount_paise,
             )
+
+            # Trigger background processing after transaction commits
+            payout_id_str = str(payout.id)
+            on_commit(lambda: _trigger_processing(payout_id_str))
+
             return _build_payout_response(payout)
 
     except IntegrityError:
@@ -111,3 +117,21 @@ def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempote
             idempotency_key=idempotency_key,
         )
         return _build_payout_response(payout)
+
+
+def _trigger_processing(payout_id: str) -> None:
+    """
+    Fire the Celery task after the DB transaction has committed.
+    Using on_commit() ensures the worker never reads a payout that
+    doesn't exist yet in the DB.
+    Fails silently if broker is unavailable (dev without Redis).
+    """
+    from apps.payouts.tasks import process_payout  # local import avoids circular at module load
+    try:
+        process_payout.delay(payout_id)
+        logger.info("process_payout task queued for payout %s", payout_id)
+    except Exception:
+        logger.warning(
+            "Could not queue process_payout for %s — broker unavailable?",
+            payout_id,
+        )

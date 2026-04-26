@@ -121,3 +121,11 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
+
+# Celery Beat — periodic tasks
+CELERY_BEAT_SCHEDULE = {
+    "retry-stuck-payouts-every-30s": {
+        "task": "apps.payouts.tasks.retry_stuck_payouts",
+        "schedule": 30.0,  # seconds
+    },
+}
