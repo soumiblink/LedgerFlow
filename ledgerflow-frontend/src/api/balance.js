@@ -13,5 +13,4 @@ export async function getBalance(merchantId) {
   } catch (error) {
     console.error('[getBalance] failed:', error.response?.data ?? error.message)
     throw error
-  }
-}
+  }}
