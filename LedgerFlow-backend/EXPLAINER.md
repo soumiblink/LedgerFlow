@@ -132,27 +132,27 @@ def transition_to(self, new_status: str):
 stuck = Payout.objects.filter(
     status=Payout.Status.PROCESSING,
     updated_at__lt=cutoff,
-).select_for_update(skip_locked=True)   # queryset is lazy, not yet evaluated
+).select_for_update(skip_locked=True)
 
 with transaction.atomic():
-    for payout in stuck:   # queryset evaluates HERE — outside the transaction context
+    for payout in stuck:
         ...
 ```
 
-**Why it is wrong:** Django querysets are lazy — they are not evaluated until iterated. The `select_for_update()` call just annotates the queryset; the actual `SELECT ... FOR UPDATE` SQL runs when the `for` loop iterates. By that point, the `with transaction.atomic()` block has already started, but PostgreSQL requires the lock to be acquired *within* an active transaction. When the queryset evaluates inside the loop, Django is inside the `atomic()` block — but the lock is acquired on the first iteration, not before the block starts. More critically, if two beat workers run simultaneously, both can evaluate the queryset before either acquires a lock, read the same stuck payouts, and process them twice — issuing two refunds for the same payout.
+**Why it is wrong:** PostgreSQL requires `SELECT ... FOR UPDATE` to run inside an open transaction. Django querysets are lazy — the SQL fires when the queryset is first iterated, which happens inside the `for` loop. But the queryset object itself is created *before* `transaction.atomic()` opens the transaction. On some Django/psycopg2 versions this causes the lock to be acquired outside the transaction context, meaning PostgreSQL releases it immediately. More critically, two beat workers running simultaneously both build the queryset before either enters the `atomic()` block. Both see the same stuck payouts. Both process them. Both issue refunds. The unique constraint on `LedgerEntry` doesn't protect against this because `PAYOUT_REFUND` entries have no such constraint.
 
 **The fix:**
 
 ```python
-# CORRECT — queryset evaluation and lock acquisition inside the transaction
+# CORRECT — queryset defined and evaluated inside the transaction
 with transaction.atomic():
     stuck = Payout.objects.filter(
         status=Payout.Status.PROCESSING,
         updated_at__lt=cutoff,
-    ).select_for_update(skip_locked=True)   # evaluated here, inside the transaction
+    ).select_for_update(skip_locked=True)
 
     for payout in stuck:
         ...
 ```
 
-Moving the queryset definition inside `transaction.atomic()` ensures the `SELECT ... FOR UPDATE` runs within the transaction. `skip_locked=True` means a second worker skips rows already locked by the first, rather than blocking — preventing both deadlocks and duplicate processing.
+The queryset is now defined inside `transaction.atomic()`, so the `SELECT ... FOR UPDATE` SQL fires within the open transaction. `skip_locked=True` means a second worker skips rows already locked by the first — no blocking, no deadlocks, no duplicate processing.
