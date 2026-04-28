@@ -12,22 +12,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  async function fetchBalance() {
-    try {
-      setLoading(true)
-      setError(null)
-      const data = await getBalance(MERCHANT_ID)
-      setBalance(data)
-    } catch (err) {
-      setError(
-        err.response?.data?.error?.message ??
-        'Failed to load balance. Please try again.'
-      )
-    } finally {
-      setLoading(false)
-    }
-  }
-
   useEffect(() => {
     let cancelled = false
     async function load() {

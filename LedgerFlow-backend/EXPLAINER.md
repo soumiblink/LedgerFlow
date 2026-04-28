@@ -22,6 +22,8 @@ The table is append-only by design: `save()` raises `ValueError` if `pk` already
 
 `amount_paise` is `BigIntegerField`. The `type` field (CREDIT/DEBIT) carries the direction. Amounts are always positive integers.
 
+
+
 ---
 
 ## 2. The Lock
