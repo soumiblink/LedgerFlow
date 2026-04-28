@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { getBalance } from '../api/balance'
 import BalanceCard from '../components/BalanceCard'
 import PayoutForm from '../components/PayoutForm'
+import PayoutHistory from '../components/PayoutHistory'
+import LedgerTable from '../components/LedgerTable'
 
 const MERCHANT_ID = import.meta.env.VITE_MERCHANT_ID ?? 'acme-merchant-id'
 
@@ -51,7 +53,7 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
-      {/* Balance section */}
+     
       <section className="space-y-4">
         <div>
           <h2 className="text-lg font-semibold text-gray-800">Merchant Balance</h2>
@@ -77,9 +79,19 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* Payout form */}
+      
       <section className="max-w-md">
         <PayoutForm merchantId={MERCHANT_ID} />
+      </section>
+
+      
+      <section>
+        <PayoutHistory merchantId={MERCHANT_ID} />
+      </section>
+
+     
+      <section>
+        <LedgerTable merchantId={MERCHANT_ID} />
       </section>
     </div>
   )

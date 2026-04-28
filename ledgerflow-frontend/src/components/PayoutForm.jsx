@@ -69,7 +69,7 @@ export default function PayoutForm({ merchantId }) {
       <h3 className="text-base font-semibold text-gray-800 mb-4">Request Payout</h3>
 
       <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-        {/* Amount */}
+        
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
             Amount (₹)
@@ -88,7 +88,7 @@ export default function PayoutForm({ merchantId }) {
           />
         </div>
 
-        {/* Bank Account */}
+        
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
             Bank Account ID
@@ -105,12 +105,12 @@ export default function PayoutForm({ merchantId }) {
           />
         </div>
 
-        {/* Validation error */}
+        
         {validationError && (
           <p className="text-sm text-red-600">{validationError}</p>
         )}
 
-        {/* API result */}
+       
         {result && (
           <div
             className={`rounded-lg px-4 py-3 text-sm ${
@@ -123,7 +123,7 @@ export default function PayoutForm({ merchantId }) {
           </div>
         )}
 
-        {/* Submit */}
+        
         <button
           type="submit"
           disabled={isSubmitting}

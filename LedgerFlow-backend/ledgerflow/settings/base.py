@@ -141,3 +141,10 @@ CORS_ALLOWED_ORIGINS = env.list(
     ],
 )
 # NOTE: Do NOT set CORS_ALLOW_ALL_ORIGINS=True in production.
+
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "authorization",
+    "content-type",
+    "idempotency-key",
+]

@@ -26,6 +26,11 @@ MAX_ATTEMPTS = 3
 STUCK_THRESHOLD_SECONDS = 30
 
 
+def _backoff_delay(attempts: int) -> int:
+    """Exponential backoff: 30s, 60s, 120s for attempts 1, 2, 3."""
+    return STUCK_THRESHOLD_SECONDS * (2 ** (attempts - 1))
+
+
 def _simulate_bank_outcome() -> str:
     """70% success / 20% failure / 10% delayed."""
     roll = random.random()
@@ -109,22 +114,31 @@ def process_payout_logic(payout_id: str) -> str:
 
 
 def handle_stuck_payouts() -> None:
-    
-    from apps.payouts.tasks import process_payout  # local import avoids circular
+    """
+    Periodic task: find PROCESSING payouts stuck past their backoff window.
+    Backoff: attempt 1 → 30s, attempt 2 → 60s, attempt 3 → 120s.
+    After MAX_ATTEMPTS, force FAILED + refund.
+    """
+    from apps.payouts.tasks import process_payout
 
-    cutoff = timezone.now() - timezone.timedelta(seconds=STUCK_THRESHOLD_SECONDS)
+    now = timezone.now()
 
     with transaction.atomic():
-        stuck = Payout.objects.filter(
+        # Fetch all stuck PROCESSING payouts and lock them
+        candidates = Payout.objects.filter(
             status=Payout.Status.PROCESSING,
-            updated_at__lt=cutoff,
         ).select_for_update(skip_locked=True)
 
-        for payout in stuck:
-            if payout.attempts <= MAX_ATTEMPTS:
+        for payout in candidates:
+            threshold = timezone.timedelta(seconds=_backoff_delay(max(payout.attempts, 1)))
+            if now - payout.updated_at < threshold:
+                continue  # not stuck yet for this attempt
+
+            if payout.attempts < MAX_ATTEMPTS:
                 logger.info(
-                    "Retrying stuck payout %s (attempt %s/%s)",
-                    payout.id, payout.attempts, MAX_ATTEMPTS,
+                    "Retrying stuck payout %s (attempt %s/%s, backoff %ss)",
+                    payout.id, payout.attempts + 1, MAX_ATTEMPTS,
+                    _backoff_delay(payout.attempts + 1),
                 )
                 payout.attempts += 1
                 payout.save(update_fields=["attempts", "updated_at"])
@@ -134,6 +148,5 @@ def handle_stuck_payouts() -> None:
                     "Payout %s exceeded max attempts — forcing FAILED + refund.",
                     payout.id,
                 )
-                # transition_to validates PROCESSING → FAILED
                 payout.transition_to(Payout.Status.FAILED)
                 _issue_refund(payout)

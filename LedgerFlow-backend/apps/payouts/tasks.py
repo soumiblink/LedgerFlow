@@ -11,7 +11,7 @@ from apps.payouts.processing import process_payout_logic, handle_stuck_payouts
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=10)
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def process_payout(self, payout_id: str):
     try:
         final_status = process_payout_logic(payout_id)
@@ -19,7 +19,8 @@ def process_payout(self, payout_id: str):
         return final_status
     except Exception as exc:
         logger.exception("process_payout task failed for %s", payout_id)
-        raise self.retry(exc=exc)
+        # Exponential backoff: 30s, 60s, 120s
+        raise self.retry(exc=exc, countdown=30 * (2 ** self.request.retries))
 
 
 @shared_task

@@ -1,54 +1,76 @@
-# LedgerFlow – Explainer
+# LedgerFlow – EXPLAINER.md
 
 ## 1. The Ledger
 
-Balance is never stored as a column. Storing it creates a second source of truth that can drift from the ledger — through bugs, failed transactions, or direct DB edits. Instead, balance is always computed on demand from `LedgerEntry` rows.
-
-Every financial event (incoming payment, payout hold, refund) writes an immutable `LedgerEntry`. The table is append-only: `save()` raises `ValueError` if `pk` already exists, and `delete()` is blocked at the model level.
-
-Balance is computed in a single aggregation query:
+**Balance calculation query:**
 
 ```python
 result = LedgerEntry.objects.filter(merchant_id=merchant_id).aggregate(
     total_credits=Sum("amount_paise", filter=Q(type="CREDIT"), default=0),
     total_debits=Sum("amount_paise",  filter=Q(type="DEBIT"),  default=0),
 )
-return result["total_credits"] - result["total_debits"]
+balance = result["total_credits"] - result["total_debits"]
 ```
 
-This means the ledger is the audit trail. Any balance figure can be independently verified by replaying the entries. There is no reconciliation problem because there is nothing to reconcile against.
+This is a single SQL aggregation — no Python loops, no fetching rows.
+
+**Why credits and debits are modeled this way:**
+
+Every financial event writes an immutable `LedgerEntry` row. Credits come from incoming payments. Debits come from payout holds. Refunds on failed payouts write a new CREDIT — they never modify or delete the original DEBIT.
+
+The table is append-only by design: `save()` raises `ValueError` if `pk` already exists, and `delete()` is blocked at the model level. This means the ledger is also the audit trail — any balance figure can be independently verified by replaying the entries. There is no stored balance column that can drift.
+
+`amount_paise` is `BigIntegerField`. The `type` field (CREDIT/DEBIT) carries the direction. Amounts are always positive integers.
 
 ---
 
 ## 2. The Lock
 
+**Exact code that prevents concurrent overdraw:**
+
 ```python
 with transaction.atomic():
+    # Acquires a PostgreSQL row-level exclusive lock on this merchant row.
+    # Any other transaction attempting select_for_update() on the same row
+    # will block here until this transaction commits or rolls back.
     merchant = Merchant.objects.select_for_update().get(id=merchant_id)
+
+    # Balance check happens INSIDE the lock — reads the committed state
+    # after any concurrent transaction has already written its DEBIT.
     available = get_available_balance(merchant.id)
     if available < amount_paise:
         raise InsufficientBalanceError(...)
+
     payout = Payout.objects.create(...)
     LedgerEntry.objects.create(type=DEBIT, ...)
 ```
 
-**The problem:** Two concurrent payout requests for the same merchant both read the balance before either writes. Both see sufficient funds. Both succeed. The merchant is overdrafted.
+**The database primitive:** PostgreSQL `SELECT ... FOR UPDATE`. This acquires an exclusive row-level lock on the merchant row for the duration of the transaction. The second concurrent request blocks at `select_for_update()` until the first transaction commits. By then, the first payout's DEBIT entry is visible, the balance check correctly sees reduced funds, and the second request is rejected.
 
-**The fix:** `select_for_update()` acquires a PostgreSQL row-level exclusive lock on the merchant row. The second transaction blocks at that line until the first commits. By the time it proceeds, the balance has already been reduced by the first payout's DEBIT entry, and the check correctly rejects it.
-
-**Why Python-level locking fails:** A `threading.Lock()` only works within a single process. Under gunicorn with multiple workers, or across multiple server instances, there is no shared memory. The lock must live in the database.
+**Why Python-level locking is insufficient:** A `threading.Lock()` only works within a single process. Under gunicorn with multiple workers, or across multiple server instances, there is no shared memory. The lock must live in the database.
 
 ---
 
 ## 3. The Idempotency
 
-Every payout request requires an `Idempotency-Key` header. The key is stored alongside the payout with a `UniqueConstraint` on `(merchant, idempotency_key)`.
+**How the system knows it has seen a key before:**
 
-**TTL:** The `IdempotencyKey` model has an `expires_at` field supporting 24-hour TTL. A `purge_expired_idempotency_keys` Celery task exists to clean up expired records. It is not yet wired into the beat schedule — the schema supports it and the task is ready to enable.
+The `idempotency_key` is stored on the `Payout` model with a `UniqueConstraint` on `(merchant, idempotency_key)`. Before entering the transaction, we do a fast pre-check:
 
-**Sequential duplicates:** Before entering the transaction, we check for an existing payout with the same key. If found, we return the original response immediately — no DB write, no lock acquired.
+```python
+existing = Payout.objects.filter(
+    merchant_id=merchant_id,
+    idempotency_key=idempotency_key,
+).first()
+if existing:
+    return _build_payout_response(existing)
+```
 
-**Concurrent duplicates (race condition):** Two requests with the same key arrive simultaneously. Both pass the pre-check (neither exists yet). Both enter the transaction. One inserts successfully. The other hits the unique constraint and raises `IntegrityError`. We catch it and return the existing payout:
+If found, we return the original response immediately — no DB write, no lock acquired.
+
+**What happens if the first request is in flight when the second arrives:**
+
+Both requests pass the pre-check (neither exists yet). Both enter `transaction.atomic()`. One inserts successfully. The other hits the unique constraint and raises `IntegrityError`. We catch it and return the existing payout:
 
 ```python
 except IntegrityError:
@@ -59,29 +81,31 @@ except IntegrityError:
     return _build_payout_response(payout)
 ```
 
-The DB constraint is the final safety net. No application-level coordination is needed.
+The DB constraint is the final safety net. No application-level coordination is needed. Keys are scoped per merchant — the same UUID from two different merchants creates two separate payouts.
+
+TTL: The `IdempotencyKey` model has an `expires_at` field. A `purge_expired_idempotency_keys` Celery task handles cleanup. The schema supports 24h TTL; the task is ready to wire into the beat schedule.
 
 ---
 
 ## 4. The State Machine
 
-Valid transitions only:
-
+**Allowed transitions:**
 ```
 PENDING → PROCESSING → COMPLETED
                      → FAILED
 ```
-
 `COMPLETED` and `FAILED` are terminal. No transitions out.
 
-Enforcement lives in `Payout.transition_to()`:
+**Where `FAILED → COMPLETED` is blocked:**
 
 ```python
+# apps/payouts/models.py
+
 VALID_TRANSITIONS = {
     Status.PENDING:    {Status.PROCESSING},
     Status.PROCESSING: {Status.COMPLETED, Status.FAILED},
-    Status.COMPLETED:  set(),
-    Status.FAILED:     set(),
+    Status.COMPLETED:  set(),   # terminal — empty set means no transitions allowed
+    Status.FAILED:     set(),   # terminal — empty set means no transitions allowed
 }
 
 def transition_to(self, new_status: str):
@@ -95,85 +119,40 @@ def transition_to(self, new_status: str):
     self.save(update_fields=["status", "updated_at"])
 ```
 
-`FAILED → COMPLETED` raises `ValueError` because `VALID_TRANSITIONS[FAILED]` is an empty set. The status is never written to the DB.
+`VALID_TRANSITIONS[FAILED]` is an empty set. `new_status not in set()` is always `True`. `ValueError` is raised before any DB write. Every status change in the codebase goes through `transition_to()` — there are no direct `payout.status = ...` assignments.
 
 ---
 
-## 5. The Retry and Refund Logic
+## 5. The AI Audit
 
-Payouts are processed by a Celery task (`process_payout`) triggered via `on_commit()` — ensuring the task is only queued after the payout row is committed to the DB.
-
-**Retry:** The Celery beat task `retry_stuck_payouts` runs every 30 seconds. It finds payouts in `PROCESSING` with `updated_at` older than 30 seconds and re-queues them. After `MAX_ATTEMPTS = 3`, the payout is forced to `FAILED`.
-
-**Refund:** On failure, the status update and the refund CREDIT entry are written in the same `transaction.atomic()` block. The status transition goes through `transition_to()` which validates `PROCESSING → FAILED` before writing:
+**The bug:** The initial AI-generated version of `handle_stuck_payouts` evaluated `select_for_update()` outside the transaction:
 
 ```python
-with transaction.atomic():
-    payout.transition_to(Payout.Status.FAILED)  # validates before writing
-    _issue_refund(payout)                        # existence-checked inside same tx
-```
-
-If the transaction rolls back, neither the status change nor the refund entry is written. They are always consistent.
-
-**Double-refund prevention:** `_issue_refund()` checks for an existing `PAYOUT_REFUND` entry before inserting:
-
-```python
-already_refunded = LedgerEntry.objects.filter(
-    reference_type="PAYOUT_REFUND",
-    reference_id=str(payout.id),
-).exists()
-if already_refunded:
-    return
-```
-
-Since `LedgerEntry` is immutable, a refund entry, once written, can never be modified or deleted.
-
----
-
-## 6. The AI Audit
-
-**The bug:** The initial generated version of `handle_stuck_payouts` evaluated `select_for_update()` outside the transaction:
-
-```python
-# WRONG — lock acquired outside transaction
+# WRONG — AI generated this
 stuck = Payout.objects.filter(
     status=Payout.Status.PROCESSING,
     updated_at__lt=cutoff,
-).select_for_update(skip_locked=True)
+).select_for_update(skip_locked=True)   # queryset is lazy, not yet evaluated
 
 with transaction.atomic():
-    for payout in stuck:
+    for payout in stuck:   # queryset evaluates HERE — outside the transaction context
         ...
 ```
 
-**Why it is wrong:** PostgreSQL requires row locks to be held within a transaction. A `select_for_update()` queryset is lazy — it is not evaluated until iterated. When iterated inside the `for` loop, Django has already exited the `atomic()` block's setup phase and the lock is acquired outside any transaction context. PostgreSQL immediately releases the lock. Two beat workers can read the same stuck payout simultaneously, process it twice, and issue two refunds.
+**Why it is wrong:** Django querysets are lazy — they are not evaluated until iterated. The `select_for_update()` call just annotates the queryset; the actual `SELECT ... FOR UPDATE` SQL runs when the `for` loop iterates. By that point, the `with transaction.atomic()` block has already started, but PostgreSQL requires the lock to be acquired *within* an active transaction. When the queryset evaluates inside the loop, Django is inside the `atomic()` block — but the lock is acquired on the first iteration, not before the block starts. More critically, if two beat workers run simultaneously, both can evaluate the queryset before either acquires a lock, read the same stuck payouts, and process them twice — issuing two refunds for the same payout.
 
-**The fix:** Move `select_for_update()` inside `transaction.atomic()` so the lock is acquired and held for the duration of the block:
+**The fix:**
 
 ```python
-# CORRECT — lock acquired and held inside transaction
+# CORRECT — queryset evaluation and lock acquisition inside the transaction
 with transaction.atomic():
     stuck = Payout.objects.filter(
         status=Payout.Status.PROCESSING,
         updated_at__lt=cutoff,
-    ).select_for_update(skip_locked=True)
+    ).select_for_update(skip_locked=True)   # evaluated here, inside the transaction
 
     for payout in stuck:
         ...
 ```
 
-`skip_locked=True` means a second worker skips rows already locked by the first, rather than blocking. This prevents both deadlocks and duplicate processing.
-
----
-
-## 7. Guarantees Provided by the System
-
-- **No double spending:** Balance check and DEBIT entry are inside a single `transaction.atomic()` block protected by `select_for_update()`. No two transactions can pass the balance check for the same merchant simultaneously.
-
-- **No duplicate payouts:** `UniqueConstraint` on `(merchant, idempotency_key)` enforced at the DB level. `IntegrityError` on concurrent duplicates is caught and resolved by returning the existing payout.
-
-- **Ledger consistency:** `LedgerEntry` is append-only and immutable. Balance is always `SUM(CREDITS) - SUM(DEBITS)` computed directly from the table. No stored balance column can drift.
-
-- **Idempotent API:** Same `Idempotency-Key` always returns the same response. Safe to retry on network failure without creating duplicate payouts or double-charging.
-
-- **Safe concurrent execution:** Row-level locking via `select_for_update()` serializes concurrent payout creation per merchant. `skip_locked=True` on the retry worker prevents duplicate processing of stuck payouts across multiple Celery workers.
+Moving the queryset definition inside `transaction.atomic()` ensures the `SELECT ... FOR UPDATE` runs within the transaction. `skip_locked=True` means a second worker skips rows already locked by the first, rather than blocking — preventing both deadlocks and duplicate processing.

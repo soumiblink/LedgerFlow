@@ -4,11 +4,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework import status
 
 from apps.merchants.models import Merchant
-from apps.ledger.services import (
-    get_merchant_balance,
-    get_merchant_held_balance,
-    get_available_balance,
-)
+from apps.ledger.services import get_all_balances
 
 
 class MerchantBalanceView(APIView):
@@ -23,9 +19,5 @@ class MerchantBalanceView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        return Response({
-            "merchant_id": str(merchant_id),
-            "total_balance": get_merchant_balance(merchant_id),
-            "held_balance": get_merchant_held_balance(merchant_id),
-            "available_balance": get_available_balance(merchant_id),
-        })
+        balances = get_all_balances(merchant_id)
+        return Response({"merchant_id": str(merchant_id), **balances})
