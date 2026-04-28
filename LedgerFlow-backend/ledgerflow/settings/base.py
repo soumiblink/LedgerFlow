@@ -138,6 +138,7 @@ CORS_ALLOWED_ORIGINS = env.list(
     default=[
         "http://localhost:5173",
         "http://localhost:5174",
+        "https://ledgerflow-44v6.onrender.com",
     ],
 )
 # NOTE: Do NOT set CORS_ALLOW_ALL_ORIGINS=True in production.
