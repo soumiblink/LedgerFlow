@@ -108,13 +108,13 @@ def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempote
 
 
 def _trigger_processing(payout_id: str) -> None:
-   
-    from apps.payouts.tasks import process_payout  # local import avoids circular at module load
+    from apps.payouts.processing import process_payout_logic
+
+    # NOTE:
+    # Running synchronously due to deployment constraints (no worker support).
+    # Replace with process_payout.delay(payout_id) in production with Celery.
     try:
-        process_payout.delay(payout_id)
-        logger.info("process_payout task queued for payout %s", payout_id)
+        final_status = process_payout_logic(payout_id)
+        logger.info("process_payout ran synchronously: id=%s status=%s", payout_id, final_status)
     except Exception:
-        logger.warning(
-            "Could not queue process_payout for %s — broker unavailable?",
-            payout_id,
-        )
+        logger.exception("Synchronous process_payout failed for %s", payout_id)
