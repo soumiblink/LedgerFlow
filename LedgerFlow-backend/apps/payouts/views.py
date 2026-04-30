@@ -35,13 +35,14 @@ class PayoutListCreateView(APIView):
             Payout.objects
             .filter(merchant_id=merchant_id)
             .order_by("-created_at")
-            .values("id", "amount_paise", "status", "created_at", "attempts")
+            .values("id", "amount_paise", "bank_account_id", "status", "created_at", "attempts")
         )
 
         results = [
             {
                 "payout_id": str(p["id"]),
                 "amount_paise": p["amount_paise"],
+                "bank_account_id": p["bank_account_id"],
                 "status": p["status"],
                 "created_at": p["created_at"],
                 "attempts": p["attempts"],

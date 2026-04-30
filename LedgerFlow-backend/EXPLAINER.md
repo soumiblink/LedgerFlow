@@ -9,18 +9,22 @@ This document explains the core architectural decisions behind LedgerFlow, focus
 **Balance calculation query:**
 
 ```python
-from django.db.models import Sum, Case, When, F, BigIntegerField
-
-balance = LedgerEntry.objects.filter(merchant_id=merchant_id).aggregate(
-    total=Sum(
-        Case(
-            When(type="CREDIT", then=F("amount_paise")),
-            When(type="DEBIT", then=-F("amount_paise")),
-            output_field=BigIntegerField(),
-        )
-    )
-)["total"] or 0
+result = LedgerEntry.objects.filter(merchant_id=merchant_id).aggregate(
+    total_credits=Sum(
+        "amount_paise",
+        filter=Q(type=LedgerEntry.EntryType.CREDIT),
+        default=0,
+    ),
+    total_debits=Sum(
+        "amount_paise",
+        filter=Q(type=LedgerEntry.EntryType.DEBIT),
+        default=0,
+    ),
+)
+balance = result["total_credits"] - result["total_debits"]
 ```
+
+This is a single SQL aggregation with two conditional sums — no Python loops, no fetching rows.
 
 **Invariant:**
 
@@ -127,9 +131,24 @@ except IntegrityError:
 * One succeeds
 * Second hits DB constraint → fetches existing
 
+**24-hour TTL:**
+
+Keys expire after 24 hours. The lookup filters by `created_at__gte=now-24h`:
+
+```python
+cutoff = timezone.now() - timezone.timedelta(hours=24)
+existing = Payout.objects.filter(
+    merchant_id=merchant_id,
+    idempotency_key=idempotency_key,
+    created_at__gte=cutoff,
+).first()
+```
+
+A key older than 24 hours is ignored and the request is treated as new.
+
 **Guarantee:**
 
-* Same key → same payout
+* Same key → same payout (within 24h)
 * No duplicates
 * Safe under retries
 

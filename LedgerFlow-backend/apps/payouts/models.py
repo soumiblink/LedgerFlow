@@ -27,6 +27,7 @@ class Payout(TimeStampedModel):
         related_name="payouts",
     )
     amount_paise = models.BigIntegerField()
+    bank_account_id = models.CharField(max_length=100, default="")
     status = models.CharField(
         max_length=10,
         choices=Status.choices,

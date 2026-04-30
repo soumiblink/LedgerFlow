@@ -11,6 +11,7 @@ All payout creation logic lives here:
 import logging
 from django.db import transaction, IntegrityError
 from django.db.transaction import on_commit
+from django.utils import timezone
 
 from apps.merchants.models import Merchant
 from apps.ledger.models import LedgerEntry
@@ -18,6 +19,8 @@ from apps.ledger.services import get_available_balance
 from apps.payouts.models import Payout
 
 logger = logging.getLogger(__name__)
+
+IDEMPOTENCY_KEY_TTL_HOURS = 24
 
 
 class InsufficientBalanceError(Exception):
@@ -39,10 +42,12 @@ def _build_payout_response(payout: Payout) -> dict:
 def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempotency_key: str) -> dict:
    
 
-    #  Step 1: Fast idempotency check 
+    # Step 1: Fast idempotency check — only honour keys created within 24 hours
+    cutoff = timezone.now() - timezone.timedelta(hours=IDEMPOTENCY_KEY_TTL_HOURS)
     existing = Payout.objects.filter(
         merchant_id=merchant_id,
         idempotency_key=idempotency_key,
+        created_at__gte=cutoff,  # key expired after 24h — treat as new request
     ).first()
 
     if existing:
@@ -69,6 +74,7 @@ def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempote
             payout = Payout.objects.create(
                 merchant=merchant,
                 amount_paise=amount_paise,
+                bank_account_id=bank_account_id,
                 status=Payout.Status.PENDING,
                 idempotency_key=idempotency_key,
                 attempts=0,
@@ -95,14 +101,15 @@ def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempote
             return _build_payout_response(payout)
 
     except IntegrityError:
-        
         logger.warning(
             "IntegrityError on idempotency_key=%s — concurrent duplicate, fetching existing.",
             idempotency_key,
         )
+        cutoff = timezone.now() - timezone.timedelta(hours=IDEMPOTENCY_KEY_TTL_HOURS)
         payout = Payout.objects.get(
             merchant_id=merchant_id,
             idempotency_key=idempotency_key,
+            created_at__gte=cutoff,
         )
         return _build_payout_response(payout)
 
