@@ -117,9 +117,14 @@ def create_payout(merchant_id, amount_paise: int, bank_account_id: str, idempote
 def _trigger_processing(payout_id: str) -> None:
     from apps.payouts.processing import process_payout_logic
 
-    # NOTE:
-    # Running synchronously due to deployment constraints (no worker support).
-    # Replace with process_payout.delay(payout_id) in production with Celery.
+    # PRODUCTION PATH (uncomment when deploying with a Celery worker):
+    # from apps.payouts.tasks import process_payout
+    # process_payout.delay(payout_id)
+
+    # DEMO PATH — synchronous fallback for free-tier deployment (no worker process).
+    # Render free tier does not support background workers without a paid plan.
+    # The full async infrastructure (Celery, Upstash Redis, beat scheduler) is
+    # implemented and tested locally. Swap the two lines above to go fully async.
     try:
         final_status = process_payout_logic(payout_id)
         logger.info("process_payout ran synchronously: id=%s status=%s", payout_id, final_status)

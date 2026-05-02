@@ -2,6 +2,8 @@
 
 This document explains the core architectural decisions behind LedgerFlow, focusing on correctness, concurrency safety, and real-world payment system constraints.
 
+> **Deployment note on async processing:** The full Celery async path is implemented — `process_payout.delay()`, Upstash Redis broker, beat scheduler for retries, and a `Procfile` with separate worker and beat processes. It works correctly in local testing. For the live demo, `_trigger_processing()` calls `process_payout_logic()` synchronously because Render's free tier does not support background worker processes without a paid plan. The commented-out async path is one uncomment away from being production-ready. This was a deliberate deployment tradeoff, not an architectural one.
+
 ---
 
 ## 1. The Ledger

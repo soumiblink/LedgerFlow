@@ -65,7 +65,7 @@ def _issue_refund(payout: Payout) -> None:
 def process_payout_logic(payout_id: str) -> str:
    
     with transaction.atomic():
-        # Row lock — prevents two workers processing the same payout concurrently
+       
         try:
             payout = Payout.objects.select_for_update().get(id=payout_id)
         except Payout.DoesNotExist:
@@ -73,7 +73,7 @@ def process_payout_logic(payout_id: str) -> str:
             return "NOT_FOUND"
 
 
-        # Idempotent: terminal state — nothing to do
+        
         if payout.status in (Payout.Status.COMPLETED, Payout.Status.FAILED):
             logger.info(
                 "Payout %s already terminal (%s) — skipping.", payout_id, payout.status
@@ -124,7 +124,7 @@ def handle_stuck_payouts() -> None:
     now = timezone.now()
 
     with transaction.atomic():
-        # Fetch all stuck PROCESSING payouts and lock them
+       
         candidates = Payout.objects.filter(
             status=Payout.Status.PROCESSING,
         ).select_for_update(skip_locked=True)
